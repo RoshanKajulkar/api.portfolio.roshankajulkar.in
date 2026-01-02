@@ -3,15 +3,12 @@ require("dotenv").config();
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
-const { MongoClient } = require("mongodb");
+const pool = require("./db");
+const fs = require("fs");
 
 const app = express();
 const PORT = process.env.PORT;
-const MONGO_URI = process.env.MONGO_URI;
 const DEVTO_API_KEY = process.env.DEVTO_API_KEY;
-
-const client = new MongoClient(MONGO_URI);
-const dbName = "portfolio";
 
 app.use(cors());
 
@@ -25,7 +22,7 @@ async function getIPDetails(ip) {
 }
 
 app.get("/", (req, res) => {
-  res.send("api.roshakjulkar.in API is running!");
+  res.send("api.portfolio.roshakjulkar.in API is running!");
 });
 
 app.get("/api/log", async (req, res) => {
@@ -42,55 +39,67 @@ app.get("/api/log", async (req, res) => {
     country_code = "Unknown",
   } = details;
 
-  const logData = {
+  const query = `
+      INSERT INTO logs (
+        city,
+        region,
+        region_code,
+        country,
+        country_name,
+        country_code
+      )
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id
+    `;
+
+  const values = [
     city,
     region,
     region_code,
     country,
     country_name,
     country_code,
-    createdAt: new Date(),
-  };
+  ];
 
   try {
-    await client.connect();
-    const db = client.db(dbName);
-    const collection = db.collection("logs");
-    await collection.insertOne(logData);
+    const result = await pool.query(query, values);
 
-    res.json({ message: "Logged", location: logData });
-  } catch (err) {
-    console.error("MongoDB Error:", err);
-    res.status(500).json({ error: "Failed to log data" });
-  } finally {
-    await client.close();
+    res.status(201).json({
+      success: true,
+      log_id: result.rows[0].id,
+    });
+  } catch (error) {
+    console.error("Log insert failed:", error.message);
+
+    res.status(200).json({
+      success: false,
+      message: "Log skipped",
+    });
   }
 });
 
 app.get("/api/log/stats", async (req, res) => {
   try {
-    const now = new Date();
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
+    // Total page views
+    const totalResult = await pool.query(`
+      SELECT COUNT(*)::int AS total
+      FROM logs
+    `);
 
-    await client.connect();
-    const db = client.db(dbName);
-    const collection = db.collection("logs");
-
-    const totalPageViews = await collection.countDocuments();
-    const last24HoursPageViews = await collection.countDocuments({
-      createdAt: { $gte: yesterday },
-    });
+    // Page views in last 24 hours
+    const last24Result = await pool.query(`
+      SELECT COUNT(*)::int AS last24
+      FROM logs
+      WHERE created_at >= NOW() - INTERVAL '24 hours'
+    `);
 
     res.json({
-      totalPageViews,
-      last24HoursPageViews,
+      totalPageViews: totalResult.rows[0].total,
+      last24HoursPageViews: last24Result.rows[0].last24,
     });
   } catch (err) {
-    console.error("Error fetching stats:", err);
+    console.error("Error fetching stats:", err.message);
     res.status(500).json({ message: "Error fetching stats" });
-  } finally {
-    await client.close();
   }
 });
 
